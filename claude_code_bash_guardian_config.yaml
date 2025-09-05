@@ -1,0 +1,167 @@
+# Claude Code Simplified Permission Management System - Configuration File
+# ===========================================
+# Veto-based blacklist system: any command matching the blacklist will be denied
+
+# Forbidden Environment Variables
+# ===============
+# Commands containing these environment variables will be denied
+forbidden_env_vars:
+  - LD_PRELOAD        # Dynamic library preload attacks
+  - PATH              # PATH hijacking attacks
+  - LD_LIBRARY_PATH   # Library path hijacking
+  - SHELL             # Shell hijacking
+  - IFS               # Input field separator hijacking
+  - HOME              # Home directory hijacking
+
+# Forbidden Pipe Targets
+# ===================
+# Any command piped to these targets will be denied
+# Example: cat file | sh will be denied
+forbidden_pipe_targets:
+  - sh                # Shell execution
+  - bash              # Bash execution
+  - zsh               # Zsh execution
+  - fish              # Fish shell execution
+  - eval              # Eval execution
+
+# Multi-level Commands
+# =============
+# These commands require subcommand checking, e.g., "push" in "git push"
+multi_level_commands:
+  - git               # Git version control
+  - docker            # Docker containers
+  - kubectl           # Kubernetes control
+  - npm               # Node package manager
+  - pip               # Python package manager
+  - apt               # Debian package manager
+  - yum               # Red Hat package manager
+  - systemctl         # System service control
+
+# Security Options
+# =============
+security_options:
+  # Whether to allow modifying paths outside Claude Code's runtime directory and /tmp
+  # false = only allow modifications within current directory and /tmp
+  allow_external_path_access: false
+
+  # Read-only commands that can access external paths
+  # These commands are allowed to read from external paths without restriction
+  external_read_exception_commands:
+    - cd        # Change directory (no write)
+    - ls        # List files (read-only)
+    - cat       # View files (read-only)
+    - less      # Paginate files (read-only)
+    - more      # Paginate files (read-only)
+    - head      # View file start (read-only)
+    - tail      # View file end (read-only)
+    - grep      # Search in files (read-only)
+    - rg        # Ripgrep search (read-only)
+    - find      # Find files (read-only)
+    - file      # Check file type (read-only)
+    - stat      # File statistics (read-only)
+    - wc        # Count lines/words (read-only)
+    - diff      # Compare files (read-only)
+    - tree      # Directory visualization (read-only)
+    - readlink  # Read symlink (read-only)
+    - which     # Locate command (read-only)
+    - dirname   # Path manipulation (read-only)
+    - basename  # Path manipulation (read-only)
+  
+  # Commands that can copy FROM external paths (destination not counted)
+  # These commands can read from external sources but destination is not checked
+  external_copy_exception_commands:
+    - cp        # Copy files
+    - ln        # Create links
+    - rsync     # Sync files
+
+  # Whether to allow variables as commands
+  # false = blocks $var command, $(cmd), `cmd` and other dynamic command execution
+  allow_variable_commands: false
+
+# Command Blacklist
+# ===========
+# These command and parameter combinations will be directly denied
+
+# Wrapper commands that can execute other commands
+# These commands will trigger scanning strategy for blacklist patterns
+wrapper_commands:
+  - sudo              # Privilege escalation (also in blacklist by default)
+  - timeout
+  - time
+  - nice
+  - nohup
+  - strace
+  - ltrace
+  - env
+  - watch
+  - xargs
+  - parallel
+  - caffeinate
+  - unbuffer
+  - exec
+  - eval
+  - sh
+  - bash
+  - zsh
+
+command_blacklist:
+  
+  # Privilege Escalation
+  # To allow sudo, remove it from here (it will still be processed as a wrapper)
+  - sudo            # Privilege escalation command
+  
+  # Permissions and User Management
+  - su              # Switch user
+  - passwd          # Change password
+  - chown           # Change file ownership
+  
+  # Indirect Command Execution (common bypass methods)
+  # Path Matching Behavior:
+  # - System paths (/bin/bash): Matched by basename ("bash")
+  # - Project paths (./build/bin/bash): Matched by relative path ("build/bin/bash")
+  # - Path traversal (../../../../bin/bash): Resolved and matched appropriately
+  # Examples blocked by "bash": /bin/bash, /bin/bash, ../../../../bin/bash
+  # Examples requiring "build/bin/bash" pattern: ./build/bin/bash
+  - eval            # Dynamic command execution
+  - sh              # Shell execution (includes scripts and command strings, any path)
+  - bash            # Bash execution (includes scripts and command strings, any path)
+  - zsh             # Zsh execution
+  - fish            # Fish shell execution
+  - exec            # Execute command replacing current process
+  
+  # Dangerous Git Operations
+  - git push        # Push to remote repository
+  - git reset --hard # Hard reset
+  - git clean -fd   # Force clean (AND logic: requires both -f and -d)
+  - git filter-branch # History rewriting
+  
+  # Dangerous Docker Operations
+  - docker run --privileged # Privileged container
+  - docker exec --privileged # Privileged execution
+  - docker rm -f    # Force remove container
+  
+  # Disk and Filesystem Operations
+  - mkfs            # Create filesystem
+  - fdisk           # Disk partitioning
+  - parted          # Disk partitioning tool
+  
+  # System Service Management
+  - systemctl start # Start service
+  - systemctl stop  # Stop service
+  - systemctl restart # Restart service
+  - service start   # Start service
+  - service stop    # Stop service
+
+
+# System Configuration
+# =========
+system_config:
+  
+  # Whether to enable debug mode (outputs extra debug info to stderr)
+  debug_mode: false
+  
+  # Whether to log denied commands
+  log_denials: true
+  
+  # Whether to log approved commands
+  log_approvals: true

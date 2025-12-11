@@ -37,6 +37,8 @@ This tool is provided "as is" under the MIT License, without warranty of any kin
 
 - **Enhanced Wrapper Command Detection**: Intelligently detects and scans wrapper commands (`timeout`, `xargs`, `sudo`, etc.)
 - **Variable Command Prevention**: Blocks `$var`, `$(cmd)`, `` `cmd` `` as command names
+  - Smart env var handling: allows `VAR=$OTHER ./cmd` (variable in value, not command)
+- **Heredoc Support**: Preprocesses heredoc syntax (`<< 'EOF'...EOF`) to work around bashlex limitations
 - **Script Injection Protection**: Prevents `echo "rm -rf /" > script.sh && bash script.sh` attacks
 - **Intelligent Path Normalization**: Smart path resolution and matching
 - **Complex Structure Support**: Detects dangerous commands in `for` / `while` / `if` statements
@@ -241,7 +243,7 @@ security_options:
 # Script injection - BLOCKED
 echo "rm -rf /" > cmd.sh && bash cmd.sh
 
-# Path traversal - BLOCKED  
+# Path traversal - BLOCKED
 cp file ../../etc/shadow
 
 # Variable as command - BLOCKED
@@ -249,6 +251,17 @@ cmd="rm"; $cmd file
 
 # Variable as argument - ALLOWED
 echo $USER
+
+# Variable in env value - ALLOWED
+DYLD_LIBRARY_PATH=build:$DYLD_LIBRARY_PATH ./test
+
+# Heredoc - ALLOWED (previously caused parse errors)
+python3 <<'EOF'
+print("hello")
+EOF
+
+# Dangerous command with heredoc - BLOCKED
+bash <<'EOF'   # bash is blacklisted
 ```
 
 #### System Configuration
@@ -353,6 +366,7 @@ The system uses bashlex to parse bash commands into Abstract Syntax Trees (AST) 
 1. **Context Awareness**: Understands shell quoting, escaping, and command structure
 2. **Normalization**: Bashlex automatically normalizes obfuscated patterns (e.g., `ba'sh'` → `bash`)
 3. **Accurate Detection**: Distinguishes between actual commands and strings (e.g., `echo 'rm -rf /'` is safe)
+4. **Heredoc Preprocessing**: Since bashlex cannot parse heredoc syntax, heredocs are stripped and replaced with `/dev/stdin` placeholder before parsing
 
 For compound commands like `ls /tmp/ && cp /etc/passwd ./local && touch ~/file`, bashlex generates a nested tree structure containing:
 - **ListNode**: The top-level container for compound commands
@@ -462,8 +476,12 @@ The **VariableCommandCheck** prevents dynamic command execution:
 **Detection occurs at AST level:**
 - ParameterNode or CommandsubstitutionNode in command position → blocked
 - Same nodes in argument position → allowed
+- Variables in env value assignments (before command) → allowed
 
-This enables smart detection that blocks `$cmd server` but allows `echo $USER`.
+This enables smart detection that:
+- Blocks `$cmd server` (variable as command)
+- Allows `echo $USER` (variable as argument)
+- Allows `VAR=$OTHER ./cmd` (variable in env value, not command position)
 
 ### Project Root Detection Algorithm
 
@@ -540,9 +558,10 @@ Despite the AST-based improvements, certain patterns still cannot be fully analy
 2. **Find -exec parameters**: `find /etc -exec rm {} \;` - The -exec parameter isn't analyzed
 3. **Complex constructs not fully analyzed**:
      - `echo "import os; os.system('rm -rf /')" | python3` - Interpreter not in forbidden list
-     - `cat script | dash` - Alternative shell not in forbidden list  
+     - `cat script | dash` - Alternative shell not in forbidden list
      - `echo "test" | awk 'system("ls /etc")'` - awk can execute system commands
      - `cat file | tee >(bash)` - Process substitution syntax not fully parsed by bashlex
+4. **Heredoc content not analyzed**: Content is stripped before parsing; dangerous commands inside heredoc bodies are not detected (e.g., `cat <<EOF\nrm -rf /\nEOF` is allowed). The command receiving the heredoc is still checked.
 
 ---
 

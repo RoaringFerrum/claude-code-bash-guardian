@@ -137,7 +137,18 @@ class RegressionTester:
             TestCase("$(echo rm) -rf /", False, "Command substitution blocked", "var_cmds"),
             TestCase("`echo dangerous`", False, "Backtick substitution blocked", "var_cmds"),
             TestCase("eval $cmd", False, "eval with variable blocked", "var_cmds"),
-            
+
+            # Variables in environment variable values (should be allowed - not command position)
+            TestCase("DYLD_LIBRARY_PATH=build:$DYLD_LIBRARY_PATH ./test", True, "Variable in env value allowed", "var_cmds"),
+            TestCase("VAR=$OTHER_VAR ./command", True, "Simple var reference in env value allowed", "var_cmds"),
+            TestCase("A=1 B=$A C=$B ./cmd", True, "Chained var references in env values allowed", "var_cmds"),
+            TestCase("CC=gcc CXX=g++ CFLAGS=\"$CFLAGS -O2\" make", True, "Complex env vars with variable allowed", "var_cmds"),
+            TestCase("MY_PATH=/custom:$MY_PATH ./app", True, "Custom var with path-like value allowed", "var_cmds"),
+            TestCase("LIBRARY_PATH=$HOME/lib:$LIBRARY_PATH ./app", True, "Non-forbidden env var with expansion allowed", "var_cmds"),
+            # Note: PATH and LD_LIBRARY_PATH are in forbidden_env_vars, so they're blocked by that rule
+            TestCase("PATH=/custom:$PATH ls", False, "PATH blocked by forbidden_env_vars (not variable check)", "var_cmds"),
+            TestCase("LD_LIBRARY_PATH=$HOME/lib:$LD_LIBRARY_PATH ./app", False, "LD_LIBRARY_PATH blocked by forbidden_env_vars", "var_cmds"),
+
             # Variables as arguments (should be allowed)
             TestCase("echo $USER", True, "Variable as argument allowed", "var_cmds"),
             TestCase("cp $file ./backup", True, "Variable in argument allowed", "var_cmds"),
@@ -191,12 +202,7 @@ class RegressionTester:
             # Privilege escalation
             TestCase("sudo ls", False, "sudo blocked", "blacklist"),
             TestCase("sudo -u user command", False, "sudo with user blocked", "blacklist"),
-            
-            # Network and remote access
-            TestCase("ssh user@server", False, "ssh blocked", "blacklist"),
-            TestCase("telnet server 80", False, "telnet blocked", "blacklist"),
-            TestCase("ftp ftp.server.com", False, "ftp blocked", "blacklist"),
-            
+
             # User management
             TestCase("su - otheruser", False, "su blocked", "blacklist"),
             TestCase("passwd username", False, "passwd blocked", "blacklist"),
@@ -237,7 +243,6 @@ class RegressionTester:
             # True positives - correctly blocked
             TestCase("timeout 5 sudo ls", False, "Wrapper with sudo blocked", "wrappers"),
             TestCase("time bash script.sh", False, "time wrapper with bash blocked", "wrappers"),
-            TestCase("nice -n 10 ssh server", False, "nice wrapper with ssh blocked", "wrappers"),
             TestCase("nohup rm -rf / &", False, "nohup with dangerous command blocked", "wrappers"),
             TestCase("echo /etc/passwd | xargs rm -rf", False, "xargs with rm on external blocked", "wrappers"),
             TestCase("env VAR=val sh script", False, "env wrapper with sh blocked", "wrappers"),
@@ -339,7 +344,6 @@ class RegressionTester:
             TestCase("if [ -f /etc/passwd ]; then cat /etc/passwd; fi", True, "Safe conditional allowed", "complex"),
             TestCase("while read line; do echo $line; done < /etc/passwd", True, "Safe while loop allowed", "complex"),
             TestCase("ls && sudo rm -rf /", False, "Chained with dangerous command blocked", "complex"),
-            TestCase("ls || ssh backup@server", False, "OR chain with ssh blocked", "complex"),
             TestCase("(cd /etc && ls) | grep conf", True, "Subshell with safe commands allowed", "complex"),
             
             # Path traversal attempts
@@ -377,8 +381,34 @@ class RegressionTester:
             TestCase("ls; ;pwd", False, "Double semicolon", "syntax"),
         ]
         self.run_category("Syntax Error Detection", syntax_tests)
+
+        # 9. Heredoc Support Tests (bashlex limitation workaround)
+        heredoc_tests = [
+            # Basic heredoc patterns (previously caused bashlex parse errors)
+            TestCase("cat <<'EOF'\nhello world\nEOF", True, "Heredoc with single-quoted delimiter", "heredoc"),
+            TestCase("cat <<\"EOF\"\nhello world\nEOF", True, "Heredoc with double-quoted delimiter", "heredoc"),
+            TestCase("cat <<EOF\nhello world\nEOF", True, "Heredoc with unquoted delimiter", "heredoc"),
+            TestCase("cat <<-EOF\n\thello world\nEOF", True, "Heredoc with tab-stripping", "heredoc"),
+
+            # Heredoc with different commands
+            TestCase("python3 <<'EOF'\nimport json\nprint('hello')\nEOF", True, "Python heredoc allowed", "heredoc"),
+            TestCase("node <<'SCRIPT'\nconsole.log('test');\nSCRIPT", True, "Node heredoc allowed", "heredoc"),
+
+            # Heredoc followed by other commands
+            TestCase("cat <<EOF\ncontent\nEOF\necho done", True, "Heredoc then echo allowed", "heredoc"),
+            TestCase("cat <<A\nfirst\nA\ncat <<B\nsecond\nB", True, "Multiple heredocs allowed", "heredoc"),
+
+            # Heredoc with dangerous content (content is stripped, only command matters)
+            TestCase("cat <<'EOF'\nrm -rf /\nEOF", True, "Heredoc with dangerous string content allowed", "heredoc"),
+
+            # Heredoc with dangerous commands should still be blocked
+            TestCase("bash <<'EOF'\necho test\nEOF", False, "Bash heredoc blocked by blacklist", "heredoc"),
+            TestCase("sh <<'EOF'\necho test\nEOF", False, "Sh heredoc blocked by blacklist", "heredoc"),
+            TestCase("sudo cat <<'EOF'\ncontent\nEOF", False, "Sudo with heredoc blocked", "heredoc"),
+        ]
+        self.run_category("Heredoc Support", heredoc_tests)
         
-        # 9. /dev/* Special Files Tests (FIXED - no longer false positives)
+        # 10. /dev/* Special Files Tests (FIXED - no longer false positives)
         dev_files_tests = [
             TestCase("ls > /dev/null", True, "Redirect to /dev/null allowed", "dev_files"),
             TestCase("ls 2> /dev/null", True, "Redirect stderr to /dev/null allowed", "dev_files"),

@@ -10,6 +10,7 @@ Provides unattended bash command security through intelligent filtering and path
 import json
 import sys
 import os
+import re
 from pathlib import Path
 import yaml
 import bashlex
@@ -182,14 +183,46 @@ class ProjectDetector:
 
 class CommandParser:
     """Parses bash commands into structured data"""
-    
+
+    # Regex pattern to match heredoc syntax: << [-]? ['"]? DELIMITER ['"]?
+    HEREDOC_PATTERN = re.compile(
+        r'<<-?\s*[\'"]?(\w+)[\'"]?\s*\n'  # Match << 'DELIM' or << DELIM followed by newline
+        r'(.*?)'                           # Match heredoc content (non-greedy)
+        r'\n\1\s*(?=\n|$|;|&&|\|\|)',      # Match closing DELIM on its own line
+        re.DOTALL
+    )
+
+    def _strip_heredocs(self, command: str) -> str:
+        """Strip heredoc syntax from command to allow bashlex parsing.
+
+        Heredocs like:
+            cat << 'EOF'
+            content here
+            EOF
+
+        Are replaced with a placeholder:
+            cat /dev/stdin
+
+        bashlex cannot parse heredoc syntax at all, so we replace the entire
+        heredoc construct with a safe placeholder that bashlex can parse.
+        """
+        def replace_heredoc(match):
+            # Replace entire heredoc with a placeholder argument
+            return '/dev/stdin '
+
+        result = self.HEREDOC_PATTERN.sub(replace_heredoc, command)
+        return result
+
     def parse(self, command: str, project_root: str) -> CommandContext:
         """Parse command and extract information"""
         if not command.strip():
             raise ValueError("Empty command")
-        
+
+        # Preprocess: strip heredoc content to avoid bashlex parsing errors
+        processed_command = self._strip_heredocs(command)
+
         try:
-            ast_tree = bashlex.parse(command)
+            ast_tree = bashlex.parse(processed_command)
         except Exception as e:
             raise ValueError(f"Command syntax error: {str(e)}")
         
@@ -430,14 +463,35 @@ class PipeSecurityCheck(SecurityCheck):
 
 class VariableCommandCheck(SecurityCheck):
     """Check for variable command execution"""
-    
+
     def check(self, context: CommandContext) -> CheckResult:
         if self.config.get_security_option('allow_variable_commands', False):
             return CheckResult.allow()
-        
+
         result = self._check_variables_in_ast(context.ast_tree, context)
         return result if result and not result.allowed else CheckResult.allow()
-    
+
+    def _is_assignment_part(self, part: Any) -> bool:
+        """Check if a part is an environment variable assignment (VAR=value)"""
+        if hasattr(part, 'kind') and part.kind == 'assignment':
+            return True
+        if hasattr(part, 'word'):
+            word = part.word
+            # Check for VAR=value pattern (not starting with - which would be a flag)
+            if '=' in word and not word.startswith('-'):
+                # Ensure it's a valid variable name before the =
+                var_name = word.split('=')[0]
+                if var_name and var_name[0].isalpha() or var_name[0] == '_':
+                    return True
+        return False
+
+    def _find_command_position(self, parts: List[Any]) -> int:
+        """Find the index of the actual command, skipping leading assignments"""
+        for i, part in enumerate(parts):
+            if not self._is_assignment_part(part):
+                return i
+        return 0  # Fallback to first part if all are assignments
+
     def _check_variables_in_ast(self, nodes: Any, context: CommandContext) -> Optional[CheckResult]:
         """Check AST for variable command execution"""
         if isinstance(nodes, list):
@@ -447,41 +501,43 @@ class VariableCommandCheck(SecurityCheck):
                     return result
         elif hasattr(nodes, 'kind'):
             if nodes.kind == 'command' and hasattr(nodes, 'parts') and nodes.parts:
-                first = nodes.parts[0]
-                
+                # Find the actual command position, skipping leading VAR=value assignments
+                cmd_pos = self._find_command_position(nodes.parts)
+                first = nodes.parts[cmd_pos]
+
                 # Check for parameter expansion or command substitution in command position
                 if hasattr(first, 'parts'):
                     for subpart in first.parts:
                         if hasattr(subpart, 'kind'):
                             if subpart.kind in ['parameter', 'commandsubstitution']:
                                 return CheckResult.deny("Variable command execution not allowed")
-                
+
                 # Check for eval and similar commands
                 if hasattr(first, 'word'):
                     word = first.word
                     if word == 'eval':
                         return CheckResult.deny("Dynamic command execution not allowed")
-                    
+
                     # Check source commands
                     if word in ['.', 'source', 'command', 'exec']:
-                        if len(nodes.parts) > 1:
-                            next_part = nodes.parts[1]
+                        if len(nodes.parts) > cmd_pos + 1:
+                            next_part = nodes.parts[cmd_pos + 1]
                             if hasattr(next_part, 'parts'):
                                 for subpart in next_part.parts:
                                     if hasattr(subpart, 'kind') and subpart.kind in ['parameter', 'commandsubstitution']:
                                         return CheckResult.deny("Variable command execution not allowed")
-                    
+
                     # Check wrapper commands
                     wrappers = self.config.get('wrapper_commands', [])
                     if word in wrappers:
-                        for part in nodes.parts[1:]:
+                        for part in nodes.parts[cmd_pos + 1:]:
                             if hasattr(part, 'parts'):
                                 for subpart in part.parts:
                                     if hasattr(subpart, 'kind') and subpart.kind in ['parameter', 'commandsubstitution']:
                                         if hasattr(part, 'word') and not part.word.startswith('-'):
                                             return CheckResult.deny("Variable command execution not allowed")
                                             break
-            
+
             # Recurse
             if hasattr(nodes, 'parts'):
                 result = self._check_variables_in_ast(nodes.parts, context)
@@ -491,7 +547,7 @@ class VariableCommandCheck(SecurityCheck):
                 result = self._check_variables_in_ast(nodes.list, context)
                 if result and not result.allowed:
                     return result
-        
+
         return None
 
 
